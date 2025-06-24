@@ -1,200 +1,102 @@
 class PDFProcessor {
     constructor() {
-        this.imageObjectTypes = ['Image', 'Form', 'XObject'];
+        this.PDFLib = window.PDFLib;
     }
 
     async removeImages(pdfArrayBuffer, progressCallback = () => {}) {
         try {
             progressCallback(0);
 
-            // Create a fresh copy of the ArrayBuffer to prevent detachment issues
-            const pdfData = new Uint8Array(pdfArrayBuffer.slice());
-            
-            progressCallback(10);
+            // Load PDF with PDF-lib
+            const pdfDoc = await this.PDFLib.PDFDocument.load(pdfArrayBuffer);
+            progressCallback(20);
 
-            // Load the PDF document for validation
-            try {
-                const loadingTask = pdfjsLib.getDocument({ data: pdfData });
-                const pdfDoc = await loadingTask.promise;
-                progressCallback(20);
-            } catch (pdfError) {
-                console.warn('PDF.js validation failed, proceeding with raw processing:', pdfError);
-                progressCallback(20);
+            // Get all pages
+            const pages = pdfDoc.getPages();
+            progressCallback(30);
+
+            // Process each page to remove images
+            for (let i = 0; i < pages.length; i++) {
+                const page = pages[i];
+                await this.removeImagesFromPage(page);
+                progressCallback(30 + (50 * (i + 1) / pages.length));
             }
 
-            // Parse PDF structure to identify and remove images
-            const processedPdfData = await this.processPdfData(pdfData, progressCallback);
-            
+            // Save the modified PDF  
+            const pdfBytes = await pdfDoc.save();
             progressCallback(100);
             
-            return processedPdfData;
+            return pdfBytes;
         } catch (error) {
             console.error('Error in removeImages:', error);
             throw new Error(`Failed to process PDF: ${error.message}`);
         }
     }
 
-    async processPdfData(pdfData, progressCallback) {
+    async removeImagesFromPage(page) {
         try {
-            // Convert PDF data to string for processing
-            let pdfString = new TextDecoder('latin1').decode(pdfData);
+            // Get the page's content stream
+            const { Contents } = page.node;
             
-            progressCallback(30);
+            if (!Contents) return;
 
-            // Find and remove image objects
-            pdfString = this.removeImageObjects(pdfString);
+            // Create new content without image operations
+            const cleanedContent = await this.processContentStream(page);
             
-            progressCallback(60);
-
-            // Remove image references from content streams
-            pdfString = this.removeImageReferences(pdfString);
-            
-            progressCallback(80);
-
-            // Update xref table and fix PDF structure
-            pdfString = this.updatePdfStructure(pdfString);
-            
-            progressCallback(90);
-
-            // Convert back to Uint8Array
-            const processedData = new Uint8Array(pdfString.length);
-            for (let i = 0; i < pdfString.length; i++) {
-                processedData[i] = pdfString.charCodeAt(i) & 0xFF;
+            // Update the page with cleaned content
+            if (cleanedContent) {
+                // Remove XObject resources that are images
+                const resources = page.node.Resources;
+                if (resources && resources.XObject) {
+                    const xObjects = resources.XObject;
+                    const cleanedXObjects = {};
+                    
+                    // Only keep non-image XObjects
+                    for (const [key, obj] of Object.entries(xObjects)) {
+                        if (obj && obj.Subtype && obj.Subtype !== 'Image') {
+                            cleanedXObjects[key] = obj;
+                        }
+                    }
+                    
+                    if (Object.keys(cleanedXObjects).length > 0) {
+                        resources.XObject = cleanedXObjects;
+                    } else {
+                        delete resources.XObject;
+                    }
+                }
             }
-
-            return processedData;
         } catch (error) {
-            console.error('Error in processPdfData:', error);
-            throw new Error(`Failed to process PDF data: ${error.message}`);
+            console.warn('Error processing page:', error);
         }
     }
 
-    removeImageObjects(pdfString) {
+    async processContentStream(page) {
         try {
-            // Pattern to match image objects
-            // This includes XObject images, inline images, and Form XObjects that contain images
-            const imageObjectPattern = /(\d+\s+\d+\s+obj\s*<<[^>]*\/Subtype\s*\/Image[^>]*>>.*?endobj)/gis;
-            const inlineImagePattern = /(BI\s+[^]*?\s+ID\s+[^]*?\s+EI)/gi;
-            const xObjectImagePattern = /(\d+\s+\d+\s+obj\s*<<[^>]*\/Type\s*\/XObject[^>]*\/Subtype\s*\/Image[^>]*>>.*?endobj)/gis;
+            // Get the raw content stream
+            const contentStream = page.getContentStream();
+            if (!contentStream) return null;
 
-            // Remove image objects
-            pdfString = pdfString.replace(imageObjectPattern, (match) => {
-                // Replace with a minimal empty object to maintain object numbering
-                const objMatch = match.match(/(\d+\s+\d+\s+obj)/);
-                if (objMatch) {
-                    return `${objMatch[1]}\n<< >>\nendobj`;
-                }
-                return '';
-            });
-
-            // Remove inline images
-            pdfString = pdfString.replace(inlineImagePattern, '');
-
-            // Remove XObject images
-            pdfString = pdfString.replace(xObjectImagePattern, (match) => {
-                const objMatch = match.match(/(\d+\s+\d+\s+obj)/);
-                if (objMatch) {
-                    return `${objMatch[1]}\n<< >>\nendobj`;
-                }
-                return '';
-            });
-
-            return pdfString;
+            // Convert to string for processing
+            let content = new TextDecoder().decode(contentStream);
+            
+            // Remove image-related operators
+            // Remove Do operators (which draw XObjects including images)
+            content = content.replace(/\/Im\w*\s+Do/g, '');
+            
+            // Remove inline image operators (BI...ID...EI blocks)
+            content = content.replace(/BI\s+[^]*?\s+ID\s+[^]*?\s+EI/g, '');
+            
+            // Clean up extra whitespace
+            content = content.replace(/\s+/g, ' ').trim();
+            
+            // Update the page content
+            const newContentStream = new TextEncoder().encode(content);
+            page.setContentStream(newContentStream);
+            
+            return content;
         } catch (error) {
-            console.error('Error removing image objects:', error);
-            return pdfString;
-        }
-    }
-
-    removeImageReferences(pdfString) {
-        try {
-            // Remove image references from content streams
-            // This includes Do operators that reference image XObjects
-            const doOperatorPattern = /\/Im\d+\s+Do/gi;
-            const imageResourcePattern = /\/Im\d+\s+\d+\s+\d+\s+R/gi;
-
-            // Remove Do operators for images
-            pdfString = pdfString.replace(doOperatorPattern, '');
-
-            // Remove image resources from resource dictionaries
-            pdfString = pdfString.replace(/\/XObject\s*<<[^>]*>>/gi, (match) => {
-                // Remove image references from XObject dictionary
-                let cleaned = match.replace(/\/Im\d+\s+\d+\s+\d+\s+R/gi, '');
-                // If the XObject dictionary is now empty, remove it entirely
-                if (cleaned.match(/\/XObject\s*<<\s*>>/)) {
-                    return '';
-                }
-                return cleaned;
-            });
-
-            return pdfString;
-        } catch (error) {
-            console.error('Error removing image references:', error);
-            return pdfString;
-        }
-    }
-
-    updatePdfStructure(pdfString) {
-        try {
-            // This is a simplified approach to maintain PDF structure
-            // In a full implementation, you would need to properly update the xref table
-            // and recalculate object positions
-            
-            // For now, we'll do basic cleanup to ensure the PDF remains valid
-            
-            // Remove empty lines that might have been created
-            pdfString = pdfString.replace(/\n\n+/g, '\n');
-            
-            // Ensure proper PDF structure is maintained
-            if (!pdfString.includes('%%EOF')) {
-                pdfString += '\n%%EOF';
-            }
-
-            return pdfString;
-        } catch (error) {
-            console.error('Error updating PDF structure:', error);
-            return pdfString;
-        }
-    }
-
-    // Alternative approach using PDF-lib for more robust PDF manipulation
-    async removeImagesWithPdfLib(pdfArrayBuffer, progressCallback = () => {}) {
-        try {
-            // Note: This method would require PDF-lib library
-            // For now, we'll use the basic string manipulation approach above
-            // This is a placeholder for a more robust implementation
-            
-            progressCallback(0);
-            
-            // Load PDF with PDF-lib
-            // const pdfDoc = await PDFLib.PDFDocument.load(pdfArrayBuffer);
-            
-            progressCallback(25);
-            
-            // Get all pages
-            // const pages = pdfDoc.getPages();
-            
-            progressCallback(50);
-            
-            // Process each page to remove images
-            // This would involve traversing the PDF content tree
-            // and removing image-related objects
-            
-            progressCallback(75);
-            
-            // Save the modified PDF
-            // const pdfBytes = await pdfDoc.save();
-            
-            progressCallback(100);
-            
-            // return pdfBytes;
-            
-            // For now, fall back to the string-based approach
-            throw new Error('PDF-lib implementation not available');
-            
-        } catch (error) {
-            // Fall back to string-based processing
-            return this.processPdfData(new Uint8Array(pdfArrayBuffer), progressCallback);
+            console.warn('Error processing content stream:', error);
+            return null;
         }
     }
 }
