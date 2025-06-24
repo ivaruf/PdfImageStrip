@@ -7,96 +7,111 @@ class PDFProcessor {
         try {
             progressCallback(0);
 
-            // Load PDF with PDF-lib
-            const pdfDoc = await this.PDFLib.PDFDocument.load(pdfArrayBuffer);
+            // Convert ArrayBuffer to Uint8Array for string processing
+            const pdfData = new Uint8Array(pdfArrayBuffer);
+            let pdfString = '';
+            
+            // Convert to binary string
+            for (let i = 0; i < pdfData.length; i++) {
+                pdfString += String.fromCharCode(pdfData[i]);
+            }
+            
             progressCallback(20);
 
-            // Get all pages
-            const pages = pdfDoc.getPages();
-            progressCallback(30);
-
-            // Process each page to remove images
-            for (let i = 0; i < pages.length; i++) {
-                const page = pages[i];
-                await this.removeImagesFromPage(page);
-                progressCallback(30 + (50 * (i + 1) / pages.length));
+            // Remove image objects and references using string manipulation
+            pdfString = this.removeImageObjects(pdfString);
+            progressCallback(50);
+            
+            pdfString = this.removeImageReferences(pdfString);
+            progressCallback(80);
+            
+            // Convert back to Uint8Array
+            const processedData = new Uint8Array(pdfString.length);
+            for (let i = 0; i < pdfString.length; i++) {
+                processedData[i] = pdfString.charCodeAt(i) & 0xFF;
             }
 
-            // Save the modified PDF  
-            const pdfBytes = await pdfDoc.save();
-            progressCallback(100);
+            progressCallback(90);
+
+            // Validate the result with PDF-lib
+            try {
+                const testDoc = await this.PDFLib.PDFDocument.load(processedData);
+                const validatedBytes = await testDoc.save();
+                progressCallback(100);
+                return validatedBytes;
+            } catch (validationError) {
+                console.warn('PDF validation failed, returning processed data:', validationError);
+                progressCallback(100);
+                return processedData;
+            }
             
-            return pdfBytes;
         } catch (error) {
             console.error('Error in removeImages:', error);
             throw new Error(`Failed to process PDF: ${error.message}`);
         }
     }
 
-    async removeImagesFromPage(page) {
+    removeImageObjects(pdfString) {
         try {
-            // Get the page's content stream
-            const { Contents } = page.node;
-            
-            if (!Contents) return;
-
-            // Create new content without image operations
-            const cleanedContent = await this.processContentStream(page);
-            
-            // Update the page with cleaned content
-            if (cleanedContent) {
-                // Remove XObject resources that are images
-                const resources = page.node.Resources;
-                if (resources && resources.XObject) {
-                    const xObjects = resources.XObject;
-                    const cleanedXObjects = {};
-                    
-                    // Only keep non-image XObjects
-                    for (const [key, obj] of Object.entries(xObjects)) {
-                        if (obj && obj.Subtype && obj.Subtype !== 'Image') {
-                            cleanedXObjects[key] = obj;
-                        }
-                    }
-                    
-                    if (Object.keys(cleanedXObjects).length > 0) {
-                        resources.XObject = cleanedXObjects;
-                    } else {
-                        delete resources.XObject;
-                    }
+            // Remove XObject Image objects
+            pdfString = pdfString.replace(/(\d+\s+\d+\s+obj\s*<<[^>]*\/Type\s*\/XObject[^>]*\/Subtype\s*\/Image[^>]*>>.*?endobj)/gis, (match) => {
+                const objMatch = match.match(/(\d+\s+\d+\s+obj)/);
+                if (objMatch) {
+                    return `${objMatch[1]}\n<<>>\nendobj`;
                 }
-            }
+                return '';
+            });
+
+            // Remove standalone Image objects
+            pdfString = pdfString.replace(/(\d+\s+\d+\s+obj\s*<<[^>]*\/Subtype\s*\/Image[^>]*>>.*?endobj)/gis, (match) => {
+                const objMatch = match.match(/(\d+\s+\d+\s+obj)/);
+                if (objMatch) {
+                    return `${objMatch[1]}\n<<>>\nendobj`;
+                }
+                return '';
+            });
+
+            return pdfString;
         } catch (error) {
-            console.warn('Error processing page:', error);
+            console.warn('Error removing image objects:', error);
+            return pdfString;
         }
     }
 
-    async processContentStream(page) {
+    removeImageReferences(pdfString) {
         try {
-            // Get the raw content stream
-            const contentStream = page.getContentStream();
-            if (!contentStream) return null;
+            // Remove inline images (BI...ID...EI blocks)
+            pdfString = pdfString.replace(/BI\s+[^]*?\s+ID\s+[^]*?\s+EI/gis, '');
+            
+            // Remove Do operators for images (more comprehensive patterns)
+            pdfString = pdfString.replace(/\/I\w*\s+Do\s*/g, '');
+            pdfString = pdfString.replace(/\/Im\w*\s+Do\s*/g, '');
+            pdfString = pdfString.replace(/\/Image\w*\s+Do\s*/g, '');
+            
+            // Remove q/Q blocks that only contain image operations
+            pdfString = pdfString.replace(/q\s*\/I\w*\s+Do\s*Q/g, '');
+            pdfString = pdfString.replace(/q\s*\/Im\w*\s+Do\s*Q/g, '');
+            
+            // Remove XObject dictionaries containing only images
+            pdfString = pdfString.replace(/\/XObject\s*<<[^>]*>>/gi, (match) => {
+                let cleaned = match.replace(/\/I\w*\s+\d+\s+\d+\s+R/g, '');
+                cleaned = cleaned.replace(/\/Im\w*\s+\d+\s+\d+\s+R/g, '');
+                cleaned = cleaned.replace(/\/Image\w*\s+\d+\s+\d+\s+R/g, '');
+                
+                // If XObject dictionary is now empty, remove it entirely
+                if (cleaned.match(/\/XObject\s*<<\s*>>/)) {
+                    return '';
+                }
+                return cleaned;
+            });
 
-            // Convert to string for processing
-            let content = new TextDecoder().decode(contentStream);
-            
-            // Remove image-related operators
-            // Remove Do operators (which draw XObjects including images)
-            content = content.replace(/\/Im\w*\s+Do/g, '');
-            
-            // Remove inline image operators (BI...ID...EI blocks)
-            content = content.replace(/BI\s+[^]*?\s+ID\s+[^]*?\s+EI/g, '');
-            
             // Clean up extra whitespace
-            content = content.replace(/\s+/g, ' ').trim();
+            pdfString = pdfString.replace(/\n\s*\n/g, '\n');
             
-            // Update the page content
-            const newContentStream = new TextEncoder().encode(content);
-            page.setContentStream(newContentStream);
-            
-            return content;
+            return pdfString;
         } catch (error) {
-            console.warn('Error processing content stream:', error);
-            return null;
+            console.warn('Error removing image references:', error);
+            return pdfString;
         }
     }
 }
