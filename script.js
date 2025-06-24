@@ -191,8 +191,9 @@ class PDFImageRemoverApp {
         try {
             this.updateFileProgress(fileData.id, 'processing', 0);
 
-            // Read file as array buffer
-            const arrayBuffer = await this.readFileAsArrayBuffer(fileData.file);
+            // Read file as array buffer and create a copy to prevent detachment
+            const originalBuffer = await this.readFileAsArrayBuffer(fileData.file);
+            const arrayBuffer = originalBuffer.slice(); // Create a copy
             this.updateFileProgress(fileData.id, 'processing', 20);
 
             // Process PDF to remove images

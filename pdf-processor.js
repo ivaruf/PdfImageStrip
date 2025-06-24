@@ -7,19 +7,23 @@ class PDFProcessor {
         try {
             progressCallback(0);
 
-            // Load the PDF document
-            const loadingTask = pdfjsLib.getDocument({ data: pdfArrayBuffer });
-            const pdfDoc = await loadingTask.promise;
+            // Create a fresh copy of the ArrayBuffer to prevent detachment issues
+            const pdfData = new Uint8Array(pdfArrayBuffer.slice());
             
             progressCallback(10);
 
-            // Get the PDF data as Uint8Array
-            const pdfData = new Uint8Array(pdfArrayBuffer);
-            
-            progressCallback(20);
+            // Load the PDF document for validation
+            try {
+                const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+                const pdfDoc = await loadingTask.promise;
+                progressCallback(20);
+            } catch (pdfError) {
+                console.warn('PDF.js validation failed, proceeding with raw processing:', pdfError);
+                progressCallback(20);
+            }
 
             // Parse PDF structure to identify and remove images
-            const processedPdfData = await this.processePdfData(pdfData, pdfDoc, progressCallback);
+            const processedPdfData = await this.processPdfData(pdfData, progressCallback);
             
             progressCallback(100);
             
@@ -30,7 +34,7 @@ class PDFProcessor {
         }
     }
 
-    async processePdfData(pdfData, pdfDoc, progressCallback) {
+    async processPdfData(pdfData, progressCallback) {
         try {
             // Convert PDF data to string for processing
             let pdfString = new TextDecoder('latin1').decode(pdfData);
@@ -60,7 +64,7 @@ class PDFProcessor {
 
             return processedData;
         } catch (error) {
-            console.error('Error in processePdfData:', error);
+            console.error('Error in processPdfData:', error);
             throw new Error(`Failed to process PDF data: ${error.message}`);
         }
     }
@@ -190,7 +194,7 @@ class PDFProcessor {
             
         } catch (error) {
             // Fall back to string-based processing
-            return this.processePdfData(new Uint8Array(pdfArrayBuffer), null, progressCallback);
+            return this.processPdfData(new Uint8Array(pdfArrayBuffer), progressCallback);
         }
     }
 }
