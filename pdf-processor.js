@@ -80,17 +80,18 @@ class PDFProcessor {
 
     removeImageReferences(pdfString) {
         try {
-            // Remove inline images (BI...ID...EI blocks)
-            pdfString = pdfString.replace(/BI\s+[^]*?\s+ID\s+[^]*?\s+EI/gis, '');
+            // Remove inline images (BI...ID...EI blocks) and replace with white rectangle
+            pdfString = pdfString.replace(/BI\s+[^]*?\s+ID\s+[^]*?\s+EI/gis, 'q 1 1 1 rg 0 0 100 100 re f Q');
             
-            // Remove Do operators for images (more comprehensive patterns)
-            pdfString = pdfString.replace(/\/I\w*\s+Do\s*/g, '');
-            pdfString = pdfString.replace(/\/Im\w*\s+Do\s*/g, '');
-            pdfString = pdfString.replace(/\/Image\w*\s+Do\s*/g, '');
+            // Replace Do operators for images with white rectangles instead of removing
+            pdfString = pdfString.replace(/(q\s+[^Q]*?)\/I\w*\s+Do(\s*[^Q]*?Q)/g, '$1 1 1 1 rg 0 0 100 100 re f $2');
+            pdfString = pdfString.replace(/(q\s+[^Q]*?)\/Im\w*\s+Do(\s*[^Q]*?Q)/g, '$1 1 1 1 rg 0 0 100 100 re f $2');
+            pdfString = pdfString.replace(/(q\s+[^Q]*?)\/Image\w*\s+Do(\s*[^Q]*?Q)/g, '$1 1 1 1 rg 0 0 100 100 re f $2');
             
-            // Remove q/Q blocks that only contain image operations
-            pdfString = pdfString.replace(/q\s*\/I\w*\s+Do\s*Q/g, '');
-            pdfString = pdfString.replace(/q\s*\/Im\w*\s+Do\s*Q/g, '');
+            // For standalone Do operators (not in q/Q blocks), replace with white rectangles
+            pdfString = pdfString.replace(/\/I\w*\s+Do\s*/g, 'q 1 1 1 rg 0 0 100 100 re f Q ');
+            pdfString = pdfString.replace(/\/Im\w*\s+Do\s*/g, 'q 1 1 1 rg 0 0 100 100 re f Q ');
+            pdfString = pdfString.replace(/\/Image\w*\s+Do\s*/g, 'q 1 1 1 rg 0 0 100 100 re f Q ');
             
             // Remove XObject dictionaries containing only images
             pdfString = pdfString.replace(/\/XObject\s*<<[^>]*>>/gi, (match) => {

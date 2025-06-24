@@ -35,12 +35,28 @@ class PDFImageRemoverApp {
     }
 
     bindEvents() {
-        // File input events
-        this.browseBtn.addEventListener('click', () => this.fileInput.click());
-        this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e.target.files));
+        // File input events - improved handling
+        this.browseBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.fileInput.value = ''; // Clear previous selection
+            this.fileInput.click();
+        });
+        
+        this.fileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                this.handleFileSelect(e.target.files);
+            }
+        });
         
         // Drag and drop events
-        this.uploadArea.addEventListener('click', () => this.fileInput.click());
+        this.uploadArea.addEventListener('click', (e) => {
+            // Only trigger file input if not clicking on the browse button
+            if (e.target !== this.browseBtn && !this.browseBtn.contains(e.target)) {
+                this.fileInput.value = ''; // Clear previous selection
+                this.fileInput.click();
+            }
+        });
+        
         this.uploadArea.addEventListener('dragover', (e) => this.handleDragOver(e));
         this.uploadArea.addEventListener('dragleave', (e) => this.handleDragLeave(e));
         this.uploadArea.addEventListener('drop', (e) => this.handleDrop(e));
@@ -99,10 +115,15 @@ class PDFImageRemoverApp {
         
         if (pdfFiles.length === 0) {
             this.showError('Please select only PDF files.');
+            // Reset the file input to allow re-selection
+            setTimeout(() => {
+                this.fileInput.value = '';
+            }, 100);
             return;
         }
 
         // Add new files to existing ones
+        let newFilesAdded = 0;
         pdfFiles.forEach(file => {
             if (!this.files.some(existingFile => existingFile.name === file.name && existingFile.size === file.size)) {
                 this.files.push({
@@ -112,11 +133,20 @@ class PDFImageRemoverApp {
                     size: file.size,
                     status: 'pending'
                 });
+                newFilesAdded++;
             }
         });
 
-        this.updateFileList();
-        this.fileInput.value = ''; // Reset file input
+        if (newFilesAdded > 0) {
+            this.updateFileList();
+        } else {
+            this.showError('These files are already selected.');
+        }
+        
+        // Reset file input to allow re-selection of the same files
+        setTimeout(() => {
+            this.fileInput.value = '';
+        }, 100);
     }
 
     updateFileList() {
